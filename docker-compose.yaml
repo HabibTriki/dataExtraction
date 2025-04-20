@@ -1,0 +1,29 @@
+volumes:
+  backup_new:
+  law-graph-data:
+    name: "graphdb_argos_law_uae"
+  neo4j-apoc-plugins:
+    name: "lawsearchproject_neo4j-apoc-plugins"
+    external: true
+services:
+  graph-db:
+    user: root
+    container_name: graphDB
+    hostname: graphDB
+    build: 
+      dockerfile: ./graphDB.Dockerfile
+    ports:
+      - 7474:7474
+      - 7687:7687
+    volumes:
+      - law-graph-data:/data
+      # - neo4j-apoc-plugins:/plugins:rw
+      - backup_new:/backups
+    environment:
+      - NEO4J_AUTH=neo4j/lawGraph
+      - NEO4J_server_memory_heap_initial__size=1.5G
+      - NEO4J_server_memory_heap_max__size=3G
+      - NEO4J_apoc_export_file_enabled=true
+      - NEO4J_apoc_import_file_enabled=true
+      - NEO4J_apoc_import_file_use__neo4j__config=true
+      # - NEO4J_PLUGINS=["apoc-extended","graph-data-science"]
