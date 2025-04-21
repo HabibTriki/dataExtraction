@@ -8,6 +8,7 @@ import time
 import traceback
 import tempfile
 import requests
+from markdownify import MarkdownConverter
 from extract_doc import extract_file
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
@@ -97,6 +98,13 @@ def api_request(endpoint, data):
     
     return None
 
+
+class NoLinksMarkdownConverter(MarkdownConverter):
+    def convert_a(self, el, text, convert_as_inline):
+        return text 
+def clean_html(html: str) -> str:
+    return NoLinksMarkdownConverter(heading_style="ATX").convert(html)
+
 def download_and_extract_file(url: str) -> str:
     """Download and extract legal file (PDF/DOCX/TXT) to Markdown."""
     if not url or not url.startswith("http"):
@@ -106,7 +114,7 @@ def download_and_extract_file(url: str) -> str:
         response = requests.get(url, timeout=30)
         response.raise_for_status()
 
-        suffix = os.path.splitext(url)[-1].split("?")[0]  # .pdf, .docx etc.
+        suffix = os.path.splitext(url)[-1].split("?")[0] 
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp.write(response.content)
             tmp_path = tmp.name
@@ -186,56 +194,70 @@ def fetch_doc_json(fund: str, cid: str, version_date: str = None) -> dict:
 
 
 def extract_article_content(article: dict) -> str:
-    """Extract and format content from an article object."""
     if not article:
         return ""
-        
-    content = ''
+
+    num = article.get("num", "")
+    title_line = f"### Article {num}" if num else "### Article"
+
+    modif = article.get("modificatorTitle")
+    list_modif = article.get("lstLienModification", [])
     
-    num = article.get('num')
-    if num:
-        content += f"## Article {num}\n\n"
-        
-    article_content = (
-        article.get('content') or 
-        article.get('texte') or 
-        article.get('text') or
-        ''
-    )
-    
-    content += article_content + "\n\n"
-    return content
+    nature = ""
+    for lien in list_modif:
+        if lien.get("natureText", "").upper() == "DECRET":
+            nature = "DECRET"
+            break
+
+    if modif:
+        if nature == "DECRET":
+            modif_line = f"Création {modif}"
+        else:
+            modif_line = f"Modifié par {modif}"
+    else:
+        modif_line = ""
+
+    raw_html = article.get("content") or article.get("texte") or article.get("text") or ""
+    text_md = clean_html(raw_html)
+
+    nota = article.get("nota")
+    nota_clean = clean_html(nota)
+    nota_block = f"\n\nNOTA :\n{nota_clean.strip()}" if nota else ""
+
+    return f"{title_line}\n\n{modif_line}\n\n{text_md.strip()}{nota_block}\n\n"
+
 
 
 def extract_section_content(section: dict, level: int = 2) -> str:
-    """Extract and format content from a section object with recursive handling of subsections."""
-    if not section:
+    if not isinstance(section, dict):
         return ""
-        
-    content = ''
-    
-    title = section.get('title') or section.get('titre')
+
+    output = ""
+
+    title = section.get("title") or section.get("titre")
     if title:
-        content += f"{'#' * level} {title}\n\n"
-        
-    text = section.get('content') or section.get('texte') or section.get('text') or ''
-    if text:
-        content += text + '\n\n'
-        
-    for art in section.get('articles', []):
-        content += extract_article_content(art)
-        
+        output += f"{'#' * level} {title}\n\n"
+
+    raw = section.get("content") or section.get("texte") or section.get("text") or ""
+    if raw:
+        output += clean_html(raw) + "\n\n"
+
+    articles = sorted(section.get("articles", []), key=lambda a: a.get("intOrdre", 0))
+    for art in articles:
+        output += extract_article_content(art)
+
     subsections = (
-        section.get('sections', []) or 
-        section.get('children', []) or 
-        section.get('subsections', []) or
-        []
+        section.get("sections", []) +
+        section.get("children", []) +
+        section.get("subsections", [])
     )
-    
+    subsections = sorted(subsections, key=lambda s: s.get("intOrdre", 0))
+
     for sub in subsections:
-        content += extract_section_content(sub, level + 1)
-        
-    return content
+        output += extract_section_content(sub, level + 1)
+
+    return output
+
 
 
 def json_to_markdown(fund: str, data: dict) -> str:
@@ -260,8 +282,13 @@ def json_to_markdown(fund: str, data: dict) -> str:
         md += "\n"
 
     if fund == 'CODE_DATE':
-        root = data.get('structure', {})
-        md += extract_section_content(root)
+        root_section = {
+            "title": data.get("title", ""),
+            "sections": data.get("sections", []),
+            "articles": data.get("articles", [])
+        }
+        md += extract_section_content(root_section)
+
     else:
         text = data.get('text') or data.get('content') or ''
         if text:
