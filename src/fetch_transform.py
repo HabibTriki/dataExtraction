@@ -10,6 +10,8 @@ import traceback
 import tempfile
 import requests
 from markdownify import MarkdownConverter
+from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urljoin
 from extract_doc import extract_file
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
@@ -416,24 +418,14 @@ def _create_document(tx, fund: str, cid: str, url: str, content: str, data: dict
 
 
 def _create_chunks(tx, fund: str, cid: str, chunks: list[str]):
-    """Create text chunks and connect them to their parent document."""
-    tx.run(
-        """
-        MATCH (d:Document {cid: $cid, fund: $fund})-[r:HAS_CHUNK]->(c:Chunk)
-        DELETE r, c
-        """,
-        cid=cid,
-        fund=fund
-    )
-    
-    for i, txt in enumerate(chunks):
+    tx.run("MATCH (d:Document {cid: $cid, fund: $fund})-[r:HAS_CHUNK]->(c:Chunk) DELETE r, c",
+           cid=cid, fund=fund)
+
+    def create_chunk(i, txt):
         if not txt.strip():
-            continue
-            
+            return
         chunk_id = f"{cid}__{i}"
-        
         vec = get_embedding(txt)
-        
         tx.run(
             """
             MATCH (d:Document {cid: $cid, fund: $fund})
@@ -452,6 +444,10 @@ def _create_chunks(tx, fund: str, cid: str, chunks: list[str]):
             vec=vec,
             i=i
         )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(lambda i_txt: create_chunk(*i_txt), enumerate(chunks)))
+
 
 
 def _create_document_relationships(tx, fund: str, cid: str, data: dict):
@@ -490,18 +486,54 @@ def _create_document_relationships(tx, fund: str, cid: str, data: dict):
             fund2=ref_fund
         )
 
+def process_circulaire_to_markdown(data: dict) -> str:
+    md = ""
+    data = data.get("circulaire", {})
+    title = data.get("titre") or data.get("title") or "Circulaire sans titre"
+    date_sig = data.get("dateSignature") or data.get("relevantDate")
+    date_str = ""
+    if isinstance(date_sig, int):
+        dt = datetime.utcfromtimestamp(date_sig / 1000)
+        date_str = dt.strftime("%Y-%m-%d")
+
+    auteurs = data.get("auteur") or data.get("signataire") or ""
+    nor = data.get("nor") or ""
+    mots_cles = data.get("motsClesLibres") or data.get("motsCles") or []
+    if isinstance(mots_cles, str):
+        mots_cles = [mots_cles]
+
+    md += f"# {title}\n\n"
+    md += "## Metadata\n\n"
+    md += f"* NOR: {nor}\n"
+    md += f"* Date: {date_str}\n"
+    if auteurs:
+        md += f"* Auteur(s): {auteurs}\n"
+    if mots_cles:
+        md += f"* Mots-clés: {', '.join(mots_cles)}\n"
+
+    md += "\n---\n\n"
+    body = data.get("attachment", {}).get("content")
+    if body:
+        md += body.strip()
+    else:
+        md += "(Contenu non disponible)"
+
+    return md
 
 def process_record(driver, fund: str, cid: str, url: str, version_date: str = None):
     try:
         logging.info(f"Processing {fund}/{cid}...")
         
         data = fetch_doc_json(fund, cid, version_date)
-        
+
         if not data:
             logging.warning(f"No data returned for {fund}/{cid}")
             return False
             
-        md = json_to_markdown(fund, data)
+        if fund == "CIRC":
+            md = process_circulaire_to_markdown(data)
+        else:
+            md = json_to_markdown(fund, data)
         
         if not md.strip():
             logging.warning(f"Empty content for {fund}/{cid}")
@@ -511,7 +543,7 @@ def process_record(driver, fund: str, cid: str, url: str, version_date: str = No
         file_md = download_and_extract_file(file_url)
 
         if file_md:
-            md = f"{md.strip()}\n\n---\n\n## 📎 Attached Document\n\n{file_md.strip()}"
+            md = f"{md.strip()}\n\n---\n\n##  Attached Document\n\n{file_md.strip()}"
 
         ingest_to_neo(driver, fund, cid, url, md, data)
         

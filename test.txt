@@ -1,0 +1,17 @@
+    ----------------- markdown transformer --------------
+    # example_id = "45588"
+    # fund = "CIRC"
+    # data = api_request("/dila/legifrance/lf-engine-app/consult/circulaire", {"id": example_id})
+    # md = process_circulaire_to_markdown(data)
+    
+    # with open("circ_example_output.md", "w", encoding="utf-8") as f:
+    #     f.write(md)
+    
+    # print("✅ Markdown output saved to circ_example_output.md")
+
+    ----------------- test to inject into db ---------------
+
+    for circulaire
+    ############
+    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
+    process_record(driver, "CIRC", "45359" , "https://www.legifrance.gouv.fr/circulaire/id/45359", "2025-04-22")
