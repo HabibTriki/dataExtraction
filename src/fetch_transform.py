@@ -290,7 +290,19 @@ def json_to_markdown(fund: str, data: dict) -> str:
             md += f"* Signature Date: {data['dateSignature']}\n"
         md += "\n"
 
-    if fund == 'CODE_DATE':
+    if fund == 'LODA_DATE':
+        visa = clean_html(data.get("visa", ""))
+        if visa.strip():
+            md += "## Visa\n\n" + visa.strip() + "\n\n"
+
+        for art in data.get('articles', []):
+            md += extract_article_content(art)
+
+        signers = clean_html(data.get("signers", ""))
+        if signers.strip():
+            md += "---\n\n## Signataires\n\n" + signers.strip()
+
+    elif fund == 'CODE_DATE':
         root_section = {
             "title": data.get("title", ""),
             "sections": data.get("sections", []),
@@ -623,4 +635,6 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    #main()
+    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
+    process_record(driver, "LODA_DATE", "JORFTEXT000050143416" , "https://www.legifrance.gouv.fr/loda/id/JORFTEXT000050143416", "2025-04-22")
