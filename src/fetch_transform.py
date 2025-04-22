@@ -421,9 +421,9 @@ def _create_chunks(tx, fund: str, cid: str, chunks: list[str]):
     tx.run("MATCH (d:Document {cid: $cid, fund: $fund})-[r:HAS_CHUNK]->(c:Chunk) DELETE r, c",
            cid=cid, fund=fund)
 
-    def create_chunk(i, txt):
+    for i, txt in enumerate(chunks):
         if not txt.strip():
-            return
+            continue
         chunk_id = f"{cid}__{i}"
         vec = get_embedding(txt)
         tx.run(
@@ -444,11 +444,6 @@ def _create_chunks(tx, fund: str, cid: str, chunks: list[str]):
             vec=vec,
             i=i
         )
-
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        list(executor.map(lambda i_txt: create_chunk(*i_txt), enumerate(chunks)))
-
-
 
 def _create_document_relationships(tx, fund: str, cid: str, data: dict):
     """Create relationships between this document and others it references."""
