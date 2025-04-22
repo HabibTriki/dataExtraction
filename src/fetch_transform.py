@@ -3,6 +3,7 @@ import csv
 import json
 import requests
 import logging
+import glob
 from datetime import datetime
 import time
 import traceback
@@ -528,7 +529,6 @@ def main():
         
     try:
         driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
-        # Test connection
         with driver.session() as session:
             session.run("RETURN 1")
     except Exception as e:
@@ -537,20 +537,23 @@ def main():
         
     records = []
     
-    if os.path.exists('data/to_update.csv'):
-        records = load_csv('data/to_update.csv')
-        logging.info(f"Found {len(records)} records to update")
-    
     if not records:
-        if os.path.exists('data/ids/codes.csv'):
-            records += load_csv('data/ids/codes.csv')
-        if os.path.exists('data/ids/records.csv'):
-            records += load_csv('data/ids/records.csv')
-        if os.path.exists('data/codes.csv'):
-            records += load_csv('data/codes.csv')
-        if os.path.exists('data/records.csv'):
-            records += load_csv('data/records.csv')
-    
+        if os.path.exists('data/to_update.csv'):
+            records = load_csv('data/to_update.csv')
+            logging.info(f"Found {len(records)} records to update")
+
+        if not records:
+            csv_paths = glob.glob('data/ids/*_records.csv')
+            for path in csv_paths:
+                fund_records = load_csv(path)
+                logging.info(f"Loaded {len(fund_records)} from {os.path.basename(path)}")
+                records += fund_records
+
+            if os.path.exists('data/codes.csv'):
+                records += load_csv('data/codes.csv')
+            if os.path.exists('data/records.csv'):
+                records += load_csv('data/records.csv')
+
     if not records:
         logging.error("No records found to process")
         driver.close()

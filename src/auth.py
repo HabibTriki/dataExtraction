@@ -52,6 +52,8 @@ class AuthClient:
                 raise
 
 auth_client = AuthClient()
+def get_token():
+    return auth_client.get_token()
 
 if __name__ == "__main__":
     print("Token:", auth_client.get_token())

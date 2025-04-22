@@ -4,8 +4,9 @@ import csv
 import logging
 import requests
 from datetime import datetime, timedelta
-from auth import get_token  
+from auth import get_token
 from config import API_BASE_URL
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 FUND_CONFIG = {
     "LODA_DATE": "DATE_SIGNATURE",
@@ -16,12 +17,10 @@ FUND_CONFIG = {
     "CNIL":      "DATE_DELIB",
 }
 
-PAGE_SIZE   = 10
+PAGE_SIZE   = 100
 SEARCH_URL  = f"{API_BASE_URL}/dila/legifrance/lf-engine-app/search"
 LOG_PATH    = "logs/data_collection.log"
-CSV_PATH    = "data/records.csv"
-MAX_PAGES   = 1000
-MAX_RETRIES = 3
+MAX_RETRIES = 5
 
 
 def get_date_range():
@@ -38,14 +37,10 @@ def collect_ids_for(fund: str, date_facet: str, start: str, end: str) -> list[st
         "Accept":        "application/json",
     })
 
-    ids = []
+    ids = set()
     page = 1
 
     while True:
-        if page > MAX_PAGES:
-            logging.warning(f"{fund}: reached API page cap at {MAX_PAGES}, stopping pagination")
-            break
-
         payload = {
             "recherche": {
                 "champs": [],
@@ -54,25 +49,28 @@ def collect_ids_for(fund: str, date_facet: str, start: str, end: str) -> list[st
                 ],
                 "pageNumber":     page,
                 "pageSize":       PAGE_SIZE,
-                "operateur":      "ET",
-                "sort":           date_facet,
-                "typePagination": "DEFAUT",
             },
             "fond": fund
         }
 
         for attempt in range(1, MAX_RETRIES + 1):
-            r = session.post(SEARCH_URL, json=payload, timeout=30)
-            if r.status_code == 401:
-                session.headers["Authorization"] = f"Bearer {get_token()}"
-                time.sleep(1)
-                continue
-            if r.status_code in (500, 503) and attempt < MAX_RETRIES:
-                logging.warning(f"503 on {fund} page {page}, retry {attempt}")
+            try:
+                r = session.post(SEARCH_URL, json=payload, timeout=30)
+                if r.status_code == 401:
+                    session.headers["Authorization"] = f"Bearer {get_token()}"
+                    time.sleep(1)
+                    continue
+                if r.status_code in (500, 503):
+                    logging.warning(f"{fund} page {page}: retry {attempt} on {r.status_code}")
+                    time.sleep(2 ** attempt)
+                    continue
+                r.raise_for_status()
+                break
+            except requests.RequestException as e:
+                if attempt == MAX_RETRIES:
+                    logging.error(f"Failed after {MAX_RETRIES} attempts on {fund} page {page}: {e}")
+                    return list(ids)
                 time.sleep(2 ** attempt)
-                continue
-            r.raise_for_status()
-            break
 
         data = r.json()
         hits = data.get("results") or data.get("liste") or []
@@ -90,7 +88,7 @@ def collect_ids_for(fund: str, date_facet: str, start: str, end: str) -> list[st
                     or item.get("textId")
                 )
             if doc_id:
-                ids.append(doc_id)
+                ids.add(doc_id)
 
         logging.info(f"{fund} page {page}: fetched {len(hits)} IDs")
 
@@ -99,7 +97,7 @@ def collect_ids_for(fund: str, date_facet: str, start: str, end: str) -> list[st
 
         page += 1
 
-    return ids
+    return list(ids)
 
 
 def build_data_link(fund: str, doc_id: str) -> str:
@@ -116,6 +114,11 @@ def build_data_link(fund: str, doc_id: str) -> str:
     return f"{API_BASE_URL}/dila/legifrance/lf-engine-app/consult/legiPart?textId={doc_id}&date=<ms-since-epoch>"
 
 
+def collect_year_chunk(fund, facet, year_start, year_end):
+    logging.info(f" -> {fund} : {year_start} to {year_end}")
+    return collect_ids_for(fund, facet, year_start.isoformat(), year_end.isoformat())
+
+
 def main():
     os.makedirs("logs", exist_ok=True)
     os.makedirs("data", exist_ok=True)
@@ -125,27 +128,45 @@ def main():
         format="%(asctime)s %(levelname)-8s %(message)s"
     )
 
-    start, end = get_date_range()
-    logging.info(f"Collecting IDs from {start} to {end}…")
+    end_date = datetime.utcnow().date()
+    start_date = end_date - timedelta(days=3*365)
 
-    with open(CSV_PATH, "w", newline="", encoding="utf-8") as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(["fund", "id", "data_link"])
+    logging.info(f"Collecting IDs from {start_date} to {end_date} (year by year)...")
 
-        for fund, facet in FUND_CONFIG.items():
-            ids = collect_ids_for(fund, facet, start, end)
-            logging.info(f"{fund}: total {len(ids)} IDs")
+    for fund, facet in FUND_CONFIG.items():
+        all_ids = set()
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = []
+            current = start_date
+            while current < end_date:
+                next_quarter = current + timedelta(days=91)
+                quarter_start = current
+                quarter_end = min(next_quarter - timedelta(days=1), end_date)
+                futures.append(
+                    executor.submit(collect_year_chunk, fund, facet, quarter_start, quarter_end)
+                )
+                current = next_quarter
 
-            for doc_id in ids:
+            for future in as_completed(futures):
+                try:
+                    all_ids.update(future.result())
+                except Exception as e:
+                    logging.error(f"Error collecting for {fund}: {e}")
+
+        logging.info(f"{fund}: total {len(all_ids)} IDs across 3 years")
+
+        output_path = f"data/{fund.lower()}_records.csv"
+        with open(output_path, "w", newline="", encoding="utf-8") as fund_file:
+            writer = csv.writer(fund_file)
+            writer.writerow(["fund", "id", "data_link"])
+            for doc_id in all_ids:
                 writer.writerow([fund, doc_id, build_data_link(fund, doc_id)])
 
-            print(f"\n=== {fund} ({len(ids)} IDs) ===")
-            for sample in ids[:5]:
-                print("  ", sample)
-            if len(ids) > 5:
-                print("   ...\n")
-
-    logging.info(f"All records written to {CSV_PATH}")
+        print(f"\n=== {fund} ({len(all_ids)} IDs) ===")
+        for sample in list(all_ids)[:5]:
+            print("  ", sample)
+        if len(all_ids) > 5:
+            print("   ...\n")
 
 if __name__ == "__main__":
     main()
