@@ -63,8 +63,7 @@ OVERLAP = int(os.getenv("CHUNK_OVERLAP", 100))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", 3))
 
 
-def api_request(endpoint, data):
-    """Make an authenticated request using AuthClient with retry mechanism."""
+def api_request(endpoint: str, data: dict) -> dict:
     url = f"{API_BASE_URL}{endpoint}"
     
     for attempt in range(1, MAX_RETRIES + 1):
@@ -75,29 +74,36 @@ def api_request(endpoint, data):
                 'Content-Type': 'application/json',
                 'Accept': 'application/json'
             }
-            
             response = requests.post(url, headers=headers, json=data, timeout=30)
-            
+
             if response.status_code == 401:
                 auth_client.token_data["access_token"] = None
+                logging.warning("Unauthorized (401). Refreshing token...")
                 continue
-                
-            if response.status_code in (500, 503) and attempt < MAX_RETRIES:
-                sleep_time = 2 ** attempt
-                logging.warning(f"Server error {response.status_code}, retrying in {sleep_time}s")
-                time.sleep(sleep_time)
+
+            if response.status_code == 429:
+                retry_after = int(response.headers.get("Retry-After", "5"))
+                logging.warning(f"Rate limit hit (429). Sleeping for {retry_after}s")
+                time.sleep(retry_after)
                 continue
-                
+
+            if response.status_code in (500, 503):
+                backoff = 2 ** attempt
+                logging.warning(f"Server error {response.status_code}. Retry {attempt} in {backoff}s")
+                time.sleep(backoff)
+                continue
+
             response.raise_for_status()
             return response.json()
-            
+
         except requests.exceptions.RequestException as e:
+            logging.error(f"Request error on {url}: {e}")
             if attempt == MAX_RETRIES:
-                logging.error(f"API request failed after {MAX_RETRIES} attempts: {str(e)}")
                 raise
             time.sleep(2 ** attempt)
-    
+
     return None
+
 
 
 class NoLinksMarkdownConverter(MarkdownConverter):

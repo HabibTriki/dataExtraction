@@ -8,6 +8,8 @@ from auth import get_token
 from config import API_BASE_URL
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from fetch_transform import api_request
+
 FUND_CONFIG = {
     "LODA_DATE": "DATE_SIGNATURE",
     "CIRC":      "DATE_SIGNATURE",
@@ -30,13 +32,6 @@ def get_date_range():
 
 
 def collect_ids_for(fund: str, date_facet: str, start: str, end: str) -> list[str]:
-    session = requests.Session()
-    session.headers.update({
-        "Authorization": f"Bearer {get_token()}",
-        "Content-Type":  "application/json",
-        "Accept":        "application/json",
-    })
-
     ids = set()
     page = 1
 
@@ -53,26 +48,12 @@ def collect_ids_for(fund: str, date_facet: str, start: str, end: str) -> list[st
             "fond": fund
         }
 
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                r = session.post(SEARCH_URL, json=payload, timeout=30)
-                if r.status_code == 401:
-                    session.headers["Authorization"] = f"Bearer {get_token()}"
-                    time.sleep(1)
-                    continue
-                if r.status_code in (500, 503):
-                    logging.warning(f"{fund} page {page}: retry {attempt} on {r.status_code}")
-                    time.sleep(2 ** attempt)
-                    continue
-                r.raise_for_status()
-                break
-            except requests.RequestException as e:
-                if attempt == MAX_RETRIES:
-                    logging.error(f"Failed after {MAX_RETRIES} attempts on {fund} page {page}: {e}")
-                    return list(ids)
-                time.sleep(2 ** attempt)
+        try:
+            data = api_request("/dila/legifrance/lf-engine-app/search", payload)
+        except Exception as e:
+            logging.error(f"{fund} page {page}: failed to fetch data - {e}")
+            break
 
-        data = r.json()
         hits = data.get("results") or data.get("liste") or []
         if not hits:
             logging.info(f"{fund} page {page}: no results, stopping pagination")
